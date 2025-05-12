@@ -16,6 +16,24 @@ class SpotifyFollower(TypedDict):
 SpotifyID = str
 SpotifySession = Spotify
 
+def get_saved_tracks(sp: Spotify, limit: int = 50) -> list:
+    """
+    Retrieve all saved tracks from the user's Spotify library.
+    """
+    saved_tracks = []
+    offset = 0
+    while True:
+        response = sp.current_user_saved_tracks(limit=limit, offset=offset)
+        items = response.get("items", [])
+        if not items:
+            break
+        saved_tracks.extend(items)
+        offset += limit
+        print(f"Retrieved {len(saved_tracks)} tracks so far...")
+    print(f"✅ Total saved tracks fetched: {len(saved_tracks)}")
+    return saved_tracks
+
+
 
 class SpotifyArtist(TypedDict):
     external_urls: Mapping[str, str]

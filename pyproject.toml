@@ -23,3 +23,7 @@ include = "spotify_to_tidal*"
 
 [project.scripts]
 spotify_to_tidal = "spotify_to_tidal.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["spotify_to_tidal", "spotify_to_tidal.type"]
