@@ -3,6 +3,9 @@ import argparse
 import sys
 import asyncio
 import json
+import time
+import threading
+import itertools
 from pathlib import Path
 from collections import defaultdict
 
@@ -12,6 +15,46 @@ from . import tidalapi_patch
 from .type.spotify import get_saved_tracks
 
 REVIEW_LOG_FILE = Path(".track_review_log.json")
+
+
+class Spinner:
+    def __init__(self, message="Loading..."):
+        self.message = message
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._spin)
+
+    def _spin(self):
+        spinner = itertools.cycle(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        sys.stdout.write(f"{self.message} ")
+        while not self._stop_event.is_set():
+            sys.stdout.write(next(spinner))
+            sys.stdout.flush()
+            time.sleep(0.1)
+            sys.stdout.write("\b")
+        sys.stdout.write("✔\n")
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join()
+
+
+def get_all_tidal_favorite_tracks(user, limit=1000):
+    print("📡 Fetching all saved TIDAL tracks with pagination...")
+    offset = 0
+    all_tracks = []
+
+    while True:
+        page = user.favorites.tracks(limit=limit, offset=offset)
+        if not page:
+            break
+        all_tracks.extend(page)
+        offset += limit
+        print(f"Retrieved {len(all_tracks)} tracks so far...")
+
+    return all_tracks
 
 
 def load_review_log():
@@ -51,10 +94,17 @@ def migrate_saved_tracks(spotify_session, tidal_session):
     playlist_name = "Approved Saved Tracks"
     playlist = get_or_create_playlist(tidal_session, playlist_name, "Imported from Spotify with artist approval")
 
-    print("Fetching all tracks currently in your TIDAL library...")
-    all_saved_tidal_tracks = tidal_session.user.favorites.tracks()
-    existing_titles = set(f"{t.name}|{t.artist.name}" for t in all_saved_tidal_tracks)
+    spinner = Spinner("📡 Fetching saved TIDAL tracks...")
+    spinner.start()
+    start = time.time()
 
+    all_saved_tidal_tracks = get_all_tidal_favorite_tracks(tidal_session.user)
+
+    elapsed = time.time() - start
+    spinner.stop()
+    print(f"✅ Loaded {len(all_saved_tidal_tracks)} saved TIDAL tracks in {elapsed:.1f} seconds.\n")
+
+    existing_titles = set(f"{t.name}|{t.artist.name}" for t in all_saved_tidal_tracks)
     review_log = load_review_log()
 
     for artist in sorted(artist_groups):
