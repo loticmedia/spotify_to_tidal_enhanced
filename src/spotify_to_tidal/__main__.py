@@ -82,6 +82,32 @@ def group_tracks_by_artist(tracks):
     return artist_map
 
 
+def auto_add_albums_with_multiple_tracks(tracks, tidal_session, artist_name):
+    album_counts = defaultdict(list)
+    for t in tracks:
+        album = t['album']
+        album_key = normalize(album['name'])
+        album_counts[album_key].append(t)
+
+    for album_name, track_list in album_counts.items():
+        if len(track_list) >= 3:
+            print(f"💿 Found {len(track_list)} tracks from album \"{album_name}\" — adding to TIDAL favorites...")
+            try:
+                results = tidal_session.search(album_name)
+                albums = results.get("albums", [])
+                matching_albums = [
+                    a for a in albums
+                    if normalize(a.artist.name) == normalize(artist_name)
+                ]
+                if matching_albums:
+                    tidal_session.user.favorites.add_album(matching_albums[0].id)
+                    print(f"✅ Album \"{album_name}\" added to favorites.\n")
+                else:
+                    print(f"⚠️ Could not find album \"{album_name}\" by {artist_name}.\n")
+            except Exception as e:
+                print(f"❌ Failed to search/add album \"{album_name}\": {e}")
+
+
 def migrate_saved_tracks(spotify_session, tidal_session):
     print("Fetching saved Spotify tracks...")
     saved_tracks = get_saved_tracks(spotify_session)
@@ -137,6 +163,8 @@ def migrate_saved_tracks(spotify_session, tidal_session):
 
             for track_id in matched_ids:
                 tidal_session.user.favorites.add_track(track_id)
+
+            auto_add_albums_with_multiple_tracks(tracks, tidal_session, artist)
 
             print(f"✅ Added {len(matched_ids)} tracks to your TIDAL favorites.")
 
