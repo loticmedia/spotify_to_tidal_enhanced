@@ -106,7 +106,8 @@ def normalize(s: str) -> str:
     return s.strip().lower()
 
 
-def get_all_tidal_favorite_tracks(user, limit=1000):
+def get_all_tidal_favorite_tracks(user, limit=100):
+    """Fetch all saved TIDAL tracks with proper pagination using server-supported page size."""
     print("📡 Fetching all saved TIDAL tracks with pagination...")
     offset = 0
     all_tracks = []
@@ -115,8 +116,9 @@ def get_all_tidal_favorite_tracks(user, limit=1000):
         if not page:
             break
         all_tracks.extend(page)
-        offset += limit
         print(f"Retrieved {len(all_tracks)} tracks so far...")
+        # increment offset by number of tracks returned to avoid skipping
+        offset += len(page)
     return all_tracks
 
 
@@ -192,6 +194,10 @@ def migrate_saved_tracks(spotify_session, tidal_session):
             for tid in matched:
                 tidal_session.user.favorites.add_track(tid)
             auto_add_albums_with_multiple_tracks(tracks, tidal_session, artist)
+            # update our in-memory set so new additions are recognized
+            new_keys = set(all_keys)
+            existing_titles.update(new_keys)
+            
             print(f"✅ Added {len(matched)} tracks to your TIDAL favorites.")
             for k in all_keys:
                 failure_cache.remove_match_failure(k)
