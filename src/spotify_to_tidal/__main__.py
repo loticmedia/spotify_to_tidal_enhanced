@@ -41,6 +41,10 @@ class Spinner:
         self._thread.join()
 
 
+def normalize(s: str) -> str:
+    return s.strip().lower()
+
+
 def get_all_tidal_favorite_tracks(user, limit=1000):
     print("📡 Fetching all saved TIDAL tracks with pagination...")
     offset = 0
@@ -78,21 +82,10 @@ def group_tracks_by_artist(tracks):
     return artist_map
 
 
-def get_or_create_playlist(tidal_session, name, description):
-    playlists = tidal_session.user.playlists()
-    for p in playlists:
-        if p.name == name:
-            return p
-    return tidal_session.user.create_playlist(name, description)
-
-
 def migrate_saved_tracks(spotify_session, tidal_session):
     print("Fetching saved Spotify tracks...")
     saved_tracks = get_saved_tracks(spotify_session)
     artist_groups = group_tracks_by_artist(saved_tracks)
-
-    playlist_name = "Approved Saved Tracks"
-    playlist = get_or_create_playlist(tidal_session, playlist_name, "Imported from Spotify with artist approval")
 
     spinner = Spinner("📡 Fetching saved TIDAL tracks...")
     spinner.start()
@@ -104,20 +97,25 @@ def migrate_saved_tracks(spotify_session, tidal_session):
     spinner.stop()
     print(f"✅ Loaded {len(all_saved_tidal_tracks)} saved TIDAL tracks in {elapsed:.1f} seconds.\n")
 
-    existing_titles = set(f"{t.name}|{t.artist.name}" for t in all_saved_tidal_tracks)
+    existing_titles = set(f"{normalize(t.name)}|{normalize(t.artist.name)}" for t in all_saved_tidal_tracks)
     review_log = load_review_log()
 
     for artist in sorted(artist_groups):
         tracks = artist_groups[artist]
+        all_keys = [f"{normalize(t['name'])}|{normalize(artist)}" for t in tracks]
 
-        all_synced = all(f"{t['name']}|{artist}" in existing_titles for t in tracks)
-        all_skipped = all(f"{t['name']}|{artist}" in review_log and review_log[f"{t['name']}|{artist}"] == "skipped" for t in tracks)
+        all_in_tidal = all(key in existing_titles for key in all_keys)
+        all_skipped = all(review_log.get(key) == "skipped" for key in all_keys)
+        all_approved = all(review_log.get(key) == "approved" for key in all_keys)
 
-        if all_synced:
-            print(f"⏩ Skipping {artist} (✅ Already in TIDAL library)")
+        if all_in_tidal:
+            print(f"⏩ Skipping {artist} (✅ Already found in TIDAL)")
             continue
-        if all_skipped:
-            print(f"⏩ Skipping {artist} (❌ Previously reviewed and skipped)")
+        elif all_skipped:
+            print(f"⏩ Skipping {artist} (❌ Previously not approved)")
+            continue
+        elif all_approved and all(key in existing_titles for key in all_keys):
+            print(f"⏩ Skipping {artist} (✅ Approved and present in TIDAL)")
             continue
 
         print(f"\n🎤 Artist: {artist}")
@@ -129,7 +127,7 @@ def migrate_saved_tracks(spotify_session, tidal_session):
             album = t['album']['name']
             print(f"  • \"{name}\" — {album}")
 
-        response = input(f"\n❓ Approve and sync tracks by '{artist}'? [y/N]: ").strip().lower()
+        response = input(f"\n❓ Approve and add tracks by '{artist}' to TIDAL favorites? [y/N]: ").strip().lower()
         if response == 'y':
             print(f"✔ Syncing {artist}...")
 
@@ -137,15 +135,17 @@ def migrate_saved_tracks(spotify_session, tidal_session):
             asyncio.run(_sync.search_new_tracks_on_tidal(tidal_session, tracks, artist, {}))
             matched_ids = _sync.get_tracks_for_new_tidal_playlist(tracks)
 
-            tidalapi_patch.add_multiple_tracks_to_playlist(playlist, matched_ids)
-            print(f"✅ Added {len(matched_ids)} tracks to '{playlist_name}'")
+            for track_id in matched_ids:
+                tidal_session.user.favorites.add_track(track_id)
 
-            for t in tracks:
-                review_log[f"{t['name']}|{artist}"] = "approved"
+            print(f"✅ Added {len(matched_ids)} tracks to your TIDAL favorites.")
+
+            for key in all_keys:
+                review_log[key] = "approved"
         else:
             print(f"❌ Skipped {artist}")
-            for t in tracks:
-                review_log[f"{t['name']}|{artist}"] = "skipped"
+            for key in all_keys:
+                review_log[key] = "skipped"
 
         save_review_log(review_log)
 
