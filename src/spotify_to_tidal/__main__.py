@@ -2,12 +2,28 @@ import yaml
 import argparse
 import sys
 import asyncio
+import json
+from pathlib import Path
 from collections import defaultdict
 
 from . import sync as _sync
 from . import auth as _auth
 from . import tidalapi_patch
 from .type.spotify import get_saved_tracks
+
+REVIEW_LOG_FILE = Path(".track_review_log.json")
+
+
+def load_review_log():
+    if REVIEW_LOG_FILE.exists():
+        with open(REVIEW_LOG_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_review_log(log):
+    with open(REVIEW_LOG_FILE, "w") as f:
+        json.dump(log, f, indent=2)
 
 
 def group_tracks_by_artist(tracks):
@@ -39,12 +55,19 @@ def migrate_saved_tracks(spotify_session, tidal_session):
     all_saved_tidal_tracks = tidal_session.user.favorites.tracks()
     existing_titles = set(f"{t.name}|{t.artist.name}" for t in all_saved_tidal_tracks)
 
+    review_log = load_review_log()
+
     for artist in sorted(artist_groups):
         tracks = artist_groups[artist]
 
         all_synced = all(f"{t['name']}|{artist}" in existing_titles for t in tracks)
+        all_skipped = all(f"{t['name']}|{artist}" in review_log and review_log[f"{t['name']}|{artist}"] == "skipped" for t in tracks)
+
         if all_synced:
             print(f"⏩ Skipping {artist} (✅ Already in TIDAL library)")
+            continue
+        if all_skipped:
+            print(f"⏩ Skipping {artist} (❌ Previously reviewed and skipped)")
             continue
 
         print(f"\n🎤 Artist: {artist}")
@@ -65,9 +88,16 @@ def migrate_saved_tracks(spotify_session, tidal_session):
             matched_ids = _sync.get_tracks_for_new_tidal_playlist(tracks)
 
             tidalapi_patch.add_multiple_tracks_to_playlist(playlist, matched_ids)
-            print(f"✅ Added {len(matched_ids)} tracks to '{playlist_name}'\n")
+            print(f"✅ Added {len(matched_ids)} tracks to '{playlist_name}'")
+
+            for t in tracks:
+                review_log[f"{t['name']}|{artist}"] = "approved"
         else:
             print(f"❌ Skipped {artist}")
+            for t in tracks:
+                review_log[f"{t['name']}|{artist}"] = "skipped"
+
+        save_review_log(review_log)
 
 
 def main():
@@ -93,7 +123,6 @@ def main():
         migrate_saved_tracks(spotify_session, tidal_session)
         return
 
-    # Original playlist/favorites syncing
     if args.uri:
         spotify_playlist = spotify_session.playlist(args.uri)
         tidal_playlists = _sync.get_tidal_playlists_wrapper(tidal_session)
