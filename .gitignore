@@ -33,3 +33,6 @@ dmypy.json
 
 # Visual Studio Code
 .vscode/
+.spotify_saved_tracks_cache.json
+.track_review_log.json
+.gitignore
