@@ -121,15 +121,14 @@ async def auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, arti
         key = normalize(album.get('name', ''))
         album_counts[key].append(t)
 
+    def normalize_artist_name(name: str) -> str:
+        name = name.lower().replace(" and ", " & ").replace("&", " and ")
+        return normalize(name)
+
     async def add_album(album_name, track_list):
         if len(track_list) < 3:
             return
         print(f"\U0001F4BF Adding album '{album_name}' to TIDAL favorites... ({len(track_list)} tracks)")
-
-        def normalize_artist_name(name: str) -> str:
-            name = name.lower().replace(" and ", " & ").replace("&", " and ")
-            return normalize(name)
-
         try:
             results = tidal_session.search(album_name) or {}
             albums = results.get('albums', [])
@@ -141,11 +140,15 @@ async def auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, arti
                 await asyncio.to_thread(tidal_session.user.favorites.add_album, matches[0].id)
             else:
                 print(f"⚠️ No match for '{album_name}' by {artist_name}")
+                with open("albums_not_found.txt", "a", encoding="utf-8") as f:
+                    f.write(f"{artist_name} — {album_name}\n")
         except Exception as e:
             print(f"❌ Error adding album '{album_name}': {e}")
-
+            with open("albums_not_found.txt", "a", encoding="utf-8") as f:
+                f.write(f"{artist_name} — {album_name} [Error: {e}]\n")
 
     await asyncio.gather(*(add_album(name, tracks) for name, tracks in album_counts.items()))
+
 
 async def migrate_saved_tracks(spotify_session, tidal_session):
     print("Fetching saved Spotify tracks...")
