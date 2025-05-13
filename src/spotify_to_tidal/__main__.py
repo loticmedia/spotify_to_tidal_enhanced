@@ -7,64 +7,55 @@ from pathlib import Path
 from collections import defaultdict
 import datetime
 import sqlalchemy
-from sqlalchemy import Table, Column, String, DateTime, MetaData, insert, select, update, delete
+from sqlalchemy import Table, Column, String, DateTime, MetaData, insert, select, update
 
 from . import sync as _sync
 from . import auth as _auth
 from .type.spotify import get_saved_tracks
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn, BarColumn, TaskProgressColumn
 
-# --- Unified Review Database: stores track statuses (approved/skipped) and retry info ---
+# --- Unified Review Database ---
 class ReviewDatabase:
-    """
-    SQLite database of track review statuses: 'approved', 'skipped', or 'unapproved'.
-    For skipped tracks, next_retry dictates when to retry.
-    """
     def __init__(self, filename='.cache.db'):
         self.engine = sqlalchemy.create_engine(f"sqlite:///{filename}")
         self.meta = MetaData()
         self.table = Table(
             'review_log', self.meta,
             Column('track_key', String, primary_key=True),
-            Column('status', String),  # 'approved', 'skipped', or 'unapproved'
+            Column('status', String),
             Column('insert_time', DateTime),
-            Column('next_retry', DateTime),
-            sqlite_autoincrement=False
+            Column('next_retry', DateTime)
         )
         self.meta.create_all(self.engine)
 
     def reset(self):
-        """Drop and recreate the review_log table."""
         with self.engine.begin() as conn:
             conn.execute(sqlalchemy.text("DROP TABLE IF EXISTS review_log"))
-        self.__init__()  # Re-initialize to recreate the table
+        self.__init__()
 
-    def _compute_next_retry(self, insert_time: datetime.datetime) -> datetime.datetime:
+    def _compute_next_retry(self, insert_time):
         interval = 2 * (datetime.datetime.now() - insert_time)
         return datetime.datetime.now() + interval
 
-    def set_approved(self, track_key: str):
+    def set_approved(self, track_key):
         with self.engine.connect() as conn:
             with conn.begin():
                 stmt = select(self.table).where(self.table.c.track_key == track_key)
                 existing = conn.execute(stmt).fetchone()
                 if existing:
-                    upd = update(self.table).where(
-                        self.table.c.track_key == track_key
-                    ).values(status='approved', timestamp=datetime.datetime.now(), next_retry=None)
+                    upd = update(self.table).where(self.table.c.track_key == track_key).values(status='approved', insert_time=datetime.datetime.now(), next_retry=None)
                     conn.execute(upd)
                 else:
-                    ins = insert(self.table)
-                    conn.execute(ins, {
+                    conn.execute(insert(self.table), {
                         'track_key': track_key,
                         'status': 'approved',
                         'insert_time': datetime.datetime.now(),
                         'next_retry': None
                     })
 
-    def set_skipped(self, track_key: str):
+    def set_unapproved(self, track_key):
         with self.engine.connect() as conn:
             with conn.begin():
                 stmt = select(self.table).where(self.table.c.track_key == track_key)
@@ -72,60 +63,34 @@ class ReviewDatabase:
                 now = datetime.datetime.now()
                 if existing:
                     next_retry = self._compute_next_retry(existing.insert_time or now)
-                    upd = update(self.table).where(
-                        self.table.c.track_key == track_key
-                    ).values(status='skipped', timestamp=now, next_retry=next_retry)
-                    conn.execute(upd)
+                    conn.execute(update(self.table).where(self.table.c.track_key == track_key).values(status='unapproved', insert_time=now, next_retry=next_retry))
                 else:
-                    ins = insert(self.table)
-                    conn.execute(ins, {
-                        'track_key': track_key,
-                        'status': 'skipped',
-                        'insert_time': now,
-                        'next_retry': now + datetime.timedelta(days=7)
-                    })
-
-    def set_unapproved(self, track_key: str):
-        with self.engine.connect() as conn:
-            with conn.begin():
-                stmt = select(self.table).where(self.table.c.track_key == track_key)
-                existing = conn.execute(stmt).fetchone()
-                now = datetime.datetime.now()
-                if existing:
-                    next_retry = self._compute_next_retry(existing.insert_time or now)
-                    upd = update(self.table).where(
-                        self.table.c.track_key == track_key
-                    ).values(status='unapproved', timestamp=now, next_retry=next_retry)
-                    conn.execute(upd)
-                else:
-                    ins = insert(self.table)
-                    conn.execute(ins, {
+                    conn.execute(insert(self.table), {
                         'track_key': track_key,
                         'status': 'unapproved',
                         'insert_time': now,
                         'next_retry': now + datetime.timedelta(days=7)
                     })
 
-    def get_status(self, track_key: str) -> str:
+    def get_status(self, track_key):
         stmt = select(self.table.c.status).where(self.table.c.track_key == track_key)
         with self.engine.connect() as conn:
             row = conn.execute(stmt).fetchone()
             return row.status if row else 'none'
 
-    def should_retry(self, track_key: str) -> bool:
+    def should_retry(self, track_key):
         stmt = select(self.table.c.next_retry).where(self.table.c.track_key == track_key)
         with self.engine.connect() as conn:
             row = conn.execute(stmt).fetchone()
             return bool(row and row.next_retry <= datetime.datetime.now())
 
-# Singleton instance
 review_db = ReviewDatabase()
 
 # --- Helpers ---
-def normalize(s: str) -> str:
+def normalize(s):
     return s.strip().lower()
 
-def get_all_tidal_favorite_tracks(user, limit: int = 100) -> list:
+def get_all_tidal_favorite_tracks(user, limit=100):
     all_tracks = []
     offset = 0
     while True:
@@ -136,7 +101,7 @@ def get_all_tidal_favorite_tracks(user, limit: int = 100) -> list:
         offset += len(page)
     return all_tracks
 
-def group_tracks_by_artist(tracks: list) -> dict:
+def group_tracks_by_artist(tracks):
     artist_map = defaultdict(list)
     for item in tracks:
         track = item.get('track')
@@ -146,29 +111,34 @@ def group_tracks_by_artist(tracks: list) -> dict:
         artist_map[artist].append(track)
     return artist_map
 
-def auto_add_albums_with_multiple_tracks(tracks: list, tidal_session, artist_name: str) -> None:
+async def add_track_async(session, tid):
+    await asyncio.to_thread(session.user.favorites.add_track, tid)
+
+async def auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist_name):
     album_counts = defaultdict(list)
     for t in tracks:
         album = t.get('album') or {}
         key = normalize(album.get('name', ''))
         album_counts[key].append(t)
-    for album_name, track_list in album_counts.items():
+
+    async def add_album(album_name, track_list):
         if len(track_list) < 3:
-            continue
+            return
         print(f"\U0001F4BF Adding album '{album_name}' to TIDAL favorites... ({len(track_list)} tracks)")
         try:
             results = tidal_session.search(album_name) or {}
             albums = results.get('albums', [])
             matches = [a for a in albums if normalize(a.artist.name) == normalize(artist_name)]
             if matches:
-                tidal_session.user.favorites.add_album(matches[0].id)
+                await asyncio.to_thread(tidal_session.user.favorites.add_album, matches[0].id)
             else:
                 print(f"⚠️ No match for '{album_name}' by {artist_name}")
         except Exception as e:
             print(f"❌ Error adding album '{album_name}': {e}")
 
-# --- Migrate Saved Tracks Path ---
-def migrate_saved_tracks(spotify_session, tidal_session) -> None:
+    await asyncio.gather(*(add_album(name, tracks) for name, tracks in album_counts.items()))
+
+async def migrate_saved_tracks(spotify_session, tidal_session):
     print("Fetching saved Spotify tracks...")
     saved_tracks = get_saved_tracks(spotify_session)
     artist_groups = group_tracks_by_artist(saved_tracks)
@@ -177,12 +147,15 @@ def migrate_saved_tracks(spotify_session, tidal_session) -> None:
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
         TimeElapsedColumn(),
         transient=True,
         console=console
     ) as progress:
         task = progress.add_task("📡 Fetching saved TIDAL tracks...", start=True)
-        existing = get_all_tidal_favorite_tracks(tidal_session.user)
+        existing = await asyncio.to_thread(get_all_tidal_favorite_tracks, tidal_session.user)
+        progress.update(task, completed=1)
 
     existing_titles = {f"{normalize(t.name)}|{normalize(t.artist.name)}" for t in existing}
     print(f"✅ Loaded {len(existing_titles)} TIDAL favorites.")
@@ -191,18 +164,8 @@ def migrate_saved_tracks(spotify_session, tidal_session) -> None:
         tracks = artist_groups[artist]
         keys = [f"{normalize(t['name'])}|{normalize(artist)}" for t in tracks]
 
-        if all(k in existing_titles for k in keys):
-            print(f"⏭️  Skipping {artist}: all tracks already in TIDAL")
-            continue
-
-        if all(review_db.get_status(k) == 'approved' or k in existing_titles for k in keys):
-            print(f"⏭️  Skipping {artist}: all tracks approved or already in TIDAL")
-            continue
-        if all(review_db.get_status(k) == 'unapproved' or k in existing_titles for k in keys):
-            print(f"⏭️  Skipping {artist}: all tracks unapproved or already in TIDAL")
-            continue
-        if all(review_db.get_status(k) == 'skipped' and not review_db.should_retry(k) for k in keys):
-            print(f"⏭️  Skipping {artist}: all tracks skipped and not due for retry")
+        if all(k in existing_titles or review_db.get_status(k) in ('approved', 'unapproved') or (review_db.get_status(k) == 'skipped' and not review_db.should_retry(k)) for k in keys):
+            print(f"⏭️  Skipping {artist}: all tracks handled")
             continue
 
         print(f"\n🎤 Artist: {artist} ({len(tracks)} tracks)")
@@ -212,25 +175,24 @@ def migrate_saved_tracks(spotify_session, tidal_session) -> None:
         if resp == 'y':
             print(f"🔄 Syncing {artist}...")
             _sync.populate_track_match_cache(tracks, [])
-            asyncio.run(_sync.search_new_tracks_on_tidal(tidal_session, tracks, artist, {}))
+            await _sync.search_new_tracks_on_tidal(tidal_session, tracks, artist, {})
             matched = _sync.get_tracks_for_new_tidal_playlist(tracks)
-            for tid in matched:
-                tidal_session.user.favorites.add_track(tid)
-            auto_add_albums_with_multiple_tracks(tracks, tidal_session, artist)
+            await asyncio.gather(*(add_track_async(tidal_session, tid) for tid in matched))
+            await auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist)
             existing_titles.update(keys)
             for k in keys:
                 review_db.set_approved(k)
-        elif resp == "n":
+        elif resp == 'n':
             for k in keys:
                 review_db.set_unapproved(k)
 
 # --- Main Entrypoint ---
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description="Sync or migrate Spotify data to TIDAL")
-    parser.add_argument('--config', default='config.yml', help='Path to config YAML')
-    parser.add_argument('--sync-favorites', action=argparse.BooleanOptionalAction, help='Synchronize saved tracks as favorites')
-    parser.add_argument('--migrate-saved-tracks', action='store_true', help='Review and migrate saved Spotify tracks')
-    parser.add_argument('--reset-db', action='store_true', help='Reset the review database')
+    parser.add_argument('--config', default='config.yml')
+    parser.add_argument('--sync-favorites', action=argparse.BooleanOptionalAction)
+    parser.add_argument('--migrate-saved-tracks', action='store_true')
+    parser.add_argument('--reset-db', action='store_true')
     args = parser.parse_args()
 
     if args.reset_db:
@@ -250,14 +212,11 @@ def main() -> None:
         sys.exit("Could not connect to TIDAL")
 
     if not args.migrate_saved_tracks:
-        _sync.sync_playlists_wrapper(
-            spotify_session, tidal_session,
-            _sync.get_user_playlist_mappings(spotify_session, tidal_session, cfg), cfg
-        )
+        _sync.sync_playlists_wrapper(spotify_session, tidal_session, _sync.get_user_playlist_mappings(spotify_session, tidal_session, cfg), cfg)
         if args.sync_favorites is None and cfg.get('sync_favorites_default', True):
             _sync.sync_favorites_wrapper(spotify_session, tidal_session, cfg)
     else:
-        migrate_saved_tracks(spotify_session, tidal_session)
+        asyncio.run(migrate_saved_tracks(spotify_session, tidal_session))
 
 if __name__ == '__main__':
     main()
