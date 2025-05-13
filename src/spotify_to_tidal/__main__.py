@@ -178,9 +178,11 @@ async def migrate_saved_tracks(spotify_session, tidal_session):
 
         if all_in_existing:
             print(f"⏭️  Skipping {artist}: all tracks already in TIDAL")
+            await auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist)
             continue
         if all_approved_or_existing:
             print(f"⏭️  Skipping {artist}: all tracks approved or already in TIDAL")
+            await auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist)
             continue
         if all_unapproved_or_existing:
             print(f"⏭️  Skipping {artist}: all tracks unapproved or already in TIDAL")
