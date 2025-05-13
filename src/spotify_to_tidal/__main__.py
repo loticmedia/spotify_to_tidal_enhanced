@@ -147,8 +147,6 @@ async def migrate_saved_tracks(spotify_session, tidal_session):
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
         TimeElapsedColumn(),
         transient=True,
         console=console
