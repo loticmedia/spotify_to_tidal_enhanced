@@ -21,24 +21,28 @@ class ReviewDatabase:
     """
     def __init__(self, filename='.cache.db'):
         self.engine = sqlalchemy.create_engine(f"sqlite:///{filename}")
-        meta = MetaData()
+        self.meta = MetaData()
         self.table = Table(
-            'review_log', meta,
+            'review_log', self.meta,
             Column('track_key', String, primary_key=True),
             Column('status', String),  # 'approved', 'skipped', or 'unapproved'
             Column('insert_time', DateTime),
             Column('next_retry', DateTime),
             sqlite_autoincrement=False
         )
-        meta.create_all(self.engine)
+        self.meta.create_all(self.engine)
+
+    def reset(self):
+        """Drop and recreate the review_log table."""
+        with self.engine.begin() as conn:
+            conn.execute(sqlalchemy.text("DROP TABLE IF EXISTS review_log"))
+        self.__init__()  # Re-initialize to recreate the table
 
     def _compute_next_retry(self, insert_time: datetime.datetime) -> datetime.datetime:
-        # exponential backoff: double the elapsed since insert
         interval = 2 * (datetime.datetime.now() - insert_time)
         return datetime.datetime.now() + interval
 
     def set_approved(self, track_key: str):
-        """Mark track as approved."""
         with self.engine.connect() as conn:
             with conn.begin():
                 stmt = select(self.table).where(self.table.c.track_key == track_key)
@@ -58,7 +62,6 @@ class ReviewDatabase:
                     })
 
     def set_skipped(self, track_key: str):
-        """Mark track as skipped and compute next retry."""
         with self.engine.connect() as conn:
             with conn.begin():
                 stmt = select(self.table).where(self.table.c.track_key == track_key)
@@ -80,7 +83,6 @@ class ReviewDatabase:
                     })
 
     def set_unapproved(self, track_key: str):
-        """Mark track as unapproved and compute next retry."""
         with self.engine.connect() as conn:
             with conn.begin():
                 stmt = select(self.table).where(self.table.c.track_key == track_key)
@@ -102,14 +104,12 @@ class ReviewDatabase:
                     })
 
     def get_status(self, track_key: str) -> str:
-        """Return status ('approved', 'skipped', or 'unapproved')."""
         stmt = select(self.table.c.status).where(self.table.c.track_key == track_key)
         with self.engine.connect() as conn:
             row = conn.execute(stmt).fetchone()
             return row.status if row else 'none'
 
     def should_retry(self, track_key: str) -> bool:
-        """Return True if skipped and next_retry <= now."""
         stmt = select(self.table.c.next_retry).where(self.table.c.track_key == track_key)
         with self.engine.connect() as conn:
             row = conn.execute(stmt).fetchone()
@@ -119,10 +119,8 @@ class ReviewDatabase:
 review_db = ReviewDatabase()
 
 # --- Helpers ---
-
 def normalize(s: str) -> str:
     return s.strip().lower()
-
 
 def get_all_tidal_favorite_tracks(user, limit: int = 100) -> list:
     all_tracks = []
@@ -135,7 +133,6 @@ def get_all_tidal_favorite_tracks(user, limit: int = 100) -> list:
         offset += len(page)
     return all_tracks
 
-
 def group_tracks_by_artist(tracks: list) -> dict:
     artist_map = defaultdict(list)
     for item in tracks:
@@ -146,7 +143,6 @@ def group_tracks_by_artist(tracks: list) -> dict:
         artist_map[artist].append(track)
     return artist_map
 
-
 def auto_add_albums_with_multiple_tracks(tracks: list, tidal_session, artist_name: str) -> None:
     album_counts = defaultdict(list)
     for t in tracks:
@@ -156,7 +152,7 @@ def auto_add_albums_with_multiple_tracks(tracks: list, tidal_session, artist_nam
     for album_name, track_list in album_counts.items():
         if len(track_list) < 3:
             continue
-        print(f"💿 Adding album '{album_name}' to TIDAL favorites... ({len(track_list)} tracks)")
+        print(f"\U0001F4BF Adding album '{album_name}' to TIDAL favorites... ({len(track_list)} tracks)")
         try:
             results = tidal_session.search(album_name) or {}
             albums = results.get('albums', [])
@@ -169,7 +165,6 @@ def auto_add_albums_with_multiple_tracks(tracks: list, tidal_session, artist_nam
             print(f"❌ Error adding album '{album_name}': {e}")
 
 # --- Migrate Saved Tracks Path ---
-
 def migrate_saved_tracks(spotify_session, tidal_session) -> None:
     print("Fetching saved Spotify tracks...")
     saved_tracks = get_saved_tracks(spotify_session)
@@ -183,12 +178,19 @@ def migrate_saved_tracks(spotify_session, tidal_session) -> None:
     for artist in sorted(artist_groups):
         tracks = artist_groups[artist]
         keys = [f"{normalize(t['name'])}|{normalize(artist)}" for t in tracks]
-        # skip if already approved or still waiting to retry skipped
+
+        if all(k in existing_titles for k in keys):
+            print(f"⏭️  Skipping {artist}: all tracks already in TIDAL")
+            continue
+
         if all(review_db.get_status(k) == 'approved' or k in existing_titles for k in keys):
+            print(f"⏭️  Skipping {artist}: all tracks approved or already in TIDAL")
             continue
         if all(review_db.get_status(k) == 'unapproved' or k in existing_titles for k in keys):
+            print(f"⏭️  Skipping {artist}: all tracks unapproved or already in TIDAL")
             continue
         if all(review_db.get_status(k) == 'skipped' and not review_db.should_retry(k) for k in keys):
+            print(f"⏭️  Skipping {artist}: all tracks skipped and not due for retry")
             continue
 
         print(f"\n🎤 Artist: {artist} ({len(tracks)} tracks)")
@@ -211,13 +213,19 @@ def migrate_saved_tracks(spotify_session, tidal_session) -> None:
                 review_db.set_unapproved(k)
 
 # --- Main Entrypoint ---
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync or migrate Spotify data to TIDAL")
     parser.add_argument('--config', default='config.yml', help='Path to config YAML')
     parser.add_argument('--sync-favorites', action=argparse.BooleanOptionalAction, help='Synchronize saved tracks as favorites')
     parser.add_argument('--migrate-saved-tracks', action='store_true', help='Review and migrate saved Spotify tracks')
+    parser.add_argument('--reset-db', action='store_true', help='Reset the review database')
     args = parser.parse_args()
+
+    if args.reset_db:
+        print("⚠️ Resetting the review database...")
+        review_db.reset()
+        print("✅ Review database has been reset.")
+        return
 
     with open(args.config, 'r') as f:
         cfg = yaml.safe_load(f)
