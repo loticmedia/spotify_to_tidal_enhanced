@@ -125,16 +125,25 @@ async def auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, arti
         if len(track_list) < 3:
             return
         print(f"\U0001F4BF Adding album '{album_name}' to TIDAL favorites... ({len(track_list)} tracks)")
+
+        def normalize_artist_name(name: str) -> str:
+            name = name.lower().replace(" and ", " & ").replace("&", " and ")
+            return normalize(name)
+
         try:
             results = tidal_session.search(album_name) or {}
             albums = results.get('albums', [])
-            matches = [a for a in albums if normalize(a.artist.name) == normalize(artist_name)]
+            matches = [
+                a for a in albums
+                if normalize_artist_name(a.artist.name) == normalize_artist_name(artist_name)
+            ]
             if matches:
                 await asyncio.to_thread(tidal_session.user.favorites.add_album, matches[0].id)
             else:
                 print(f"⚠️ No match for '{album_name}' by {artist_name}")
         except Exception as e:
             print(f"❌ Error adding album '{album_name}': {e}")
+
 
     await asyncio.gather(*(add_album(name, tracks) for name, tracks in album_counts.items()))
 
@@ -162,18 +171,35 @@ async def migrate_saved_tracks(spotify_session, tidal_session):
         tracks = artist_groups[artist]
         keys = [f"{normalize(t['name'])}|{normalize(artist)}" for t in tracks]
 
-        if all(k in existing_titles or review_db.get_status(k) in ('approved', 'unapproved') or (review_db.get_status(k) == 'skipped' and not review_db.should_retry(k)) for k in keys):
-            print(f"⏭️  Skipping {artist}: all tracks handled")
+        all_in_existing = all(k in existing_titles for k in keys)
+        all_approved_or_existing = all(k in existing_titles or review_db.get_status(k) == 'approved' for k in keys)
+        all_unapproved_or_existing = all(k in existing_titles or review_db.get_status(k) == 'unapproved' for k in keys)
+        all_skipped_and_not_retry = all(review_db.get_status(k) == 'skipped' and not review_db.should_retry(k) for k in keys)
+
+        if all_in_existing:
+            print(f"⏭️  Skipping {artist}: all tracks already in TIDAL")
             continue
+        if all_approved_or_existing:
+            print(f"⏭️  Skipping {artist}: all tracks approved or already in TIDAL")
+            continue
+        if all_unapproved_or_existing:
+            print(f"⏭️  Skipping {artist}: all tracks unapproved or already in TIDAL")
+            continue
+        if all_skipped_and_not_retry:
+            print(f"⏭️  Skipping {artist}: all tracks skipped and not due for retry")
+            continue
+
 
         print(f"\n🎤 Artist: {artist} ({len(tracks)} tracks)")
         for t in tracks[:5]:
             print(f"  • '{t['name']}' — {t['album']['name']}")
-        resp = input("Approve and add? [y/N]: ").strip().lower()
+        resp = input(f"Approve and add 🎹 {artist.upper()}? [y/N]: ").strip().lower()
         if resp == 'y':
             print(f"🔄 Syncing {artist}...")
             _sync.populate_track_match_cache(tracks, [])
+
             await _sync.search_new_tracks_on_tidal(tidal_session, tracks, artist, {})
+
             matched = _sync.get_tracks_for_new_tidal_playlist(tracks)
             await asyncio.gather(*(add_track_async(tidal_session, tid) for tid in matched))
             await auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist)

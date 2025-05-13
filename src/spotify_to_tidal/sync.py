@@ -25,8 +25,10 @@ def normalize(s) -> str:
     return unicodedata.normalize('NFD', s).encode('ascii', 'ignore').decode('ascii')
 
 def simple(input_string: str) -> str:
-    # only take the first part of a string before any hyphens or brackets to account for different versions
-    return input_string.split('-')[0].strip().split('(')[0].strip().split('[')[0].strip()
+    cleaned = input_string.lower().strip()
+    cleaned = cleaned.replace(" and ", " & ")  # normalize 'and' to '&'
+    # strip version suffixes
+    return cleaned.split('-')[0].split('(')[0].split('[')[0].strip()
 
 def isrc_match(tidal_track: tidalapi.Track, spotify_track) -> bool:
     if "isrc" in spotify_track["external_ids"]:
