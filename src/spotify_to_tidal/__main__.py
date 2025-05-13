@@ -13,6 +13,9 @@ from . import sync as _sync
 from . import auth as _auth
 from .type.spotify import get_saved_tracks
 
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
 # --- Unified Review Database: stores track statuses (approved/skipped) and retry info ---
 class ReviewDatabase:
     """
@@ -170,8 +173,17 @@ def migrate_saved_tracks(spotify_session, tidal_session) -> None:
     saved_tracks = get_saved_tracks(spotify_session)
     artist_groups = group_tracks_by_artist(saved_tracks)
 
-    print("📡 Fetching saved TIDAL tracks...")
-    existing = get_all_tidal_favorite_tracks(tidal_session.user)
+    console = Console()
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        transient=True,
+        console=console
+    ) as progress:
+        task = progress.add_task("📡 Fetching saved TIDAL tracks...", start=True)
+        existing = get_all_tidal_favorite_tracks(tidal_session.user)
+
     existing_titles = {f"{normalize(t.name)}|{normalize(t.artist.name)}" for t in existing}
     print(f"✅ Loaded {len(existing_titles)} TIDAL favorites.")
 
