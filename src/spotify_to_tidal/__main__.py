@@ -43,15 +43,18 @@ class ReviewDatabase:
         self.__init__()
 
     def _compute_next_retry(self, insert_time):
+        """Exponential backoff: next retry interval doubles."""
         interval = 2 * (datetime.datetime.now() - insert_time)
         return datetime.datetime.now() + interval
 
     def set_approved(self, track_key):
+        """Mark a track as approved or update its timestamp."""
         now = datetime.datetime.now()
         with self.engine.connect() as conn:
             with conn.begin():
-                stmt = select(self.table).where(self.table.c.track_key == track_key)
-                existing = conn.execute(stmt).fetchone()
+                existing = conn.execute(
+                    select(self.table).where(self.table.c.track_key == track_key)
+                ).fetchone()
                 if existing:
                     conn.execute(
                         update(self.table)
@@ -65,11 +68,13 @@ class ReviewDatabase:
                     )
 
     def set_unapproved(self, track_key):
+        """Mark a track as unapproved and schedule its next retry."""
         now = datetime.datetime.now()
         with self.engine.connect() as conn:
             with conn.begin():
-                stmt = select(self.table).where(self.table.c.track_key == track_key)
-                existing = conn.execute(stmt).fetchone()
+                existing = conn.execute(
+                    select(self.table).where(self.table.c.track_key == track_key)
+                ).fetchone()
                 if existing:
                     next_retry = self._compute_next_retry(existing.insert_time or now)
                     conn.execute(
@@ -85,29 +90,37 @@ class ReviewDatabase:
                     )
 
     def get_status(self, track_key):
-        stmt = select(self.table.c.status).where(self.table.c.track_key == track_key)
+        """Retrieve a track's review status."""
+        row = None
         with self.engine.connect() as conn:
-            row = conn.execute(stmt).fetchone()
-            return row.status if row else 'none'
+            row = conn.execute(
+                select(self.table.c.status).where(self.table.c.track_key == track_key)
+            ).fetchone()
+        return row.status if row else 'none'
 
     def should_retry(self, track_key):
-        stmt = select(self.table.c.next_retry).where(self.table.c.track_key == track_key)
+        """Check if an unapproved track is due for retry."""
+        row = None
         with self.engine.connect() as conn:
-            row = conn.execute(stmt).fetchone()
-            return bool(row and row.next_retry <= datetime.datetime.now())
+            row = conn.execute(
+                select(self.table.c.next_retry).where(self.table.c.track_key == track_key)
+            ).fetchone()
+        return bool(row and row.next_retry <= datetime.datetime.now())
 
 # Global review DB instance
 review_db = ReviewDatabase()
 
 # --- Helper Functions ---
+
 def normalize(s):
     """Trim whitespace and lowercase for consistent comparisons."""
     return s.strip().lower()
 
 
 def get_all_tidal_favorite_tracks(user, limit=100):
-    """Paginate through TIDAL favorites to build a complete list."""
-    all_tracks, offset = [], 0
+    """Paginate through all TIDAL favorites to return a list."""
+    all_tracks = []
+    offset = 0
     while True:
         page = user.favorites.tracks(limit=limit, offset=offset)
         if not page:
@@ -118,7 +131,7 @@ def get_all_tidal_favorite_tracks(user, limit=100):
 
 
 def group_tracks_by_artist(tracks):
-    """Organize saved Spotify tracks into a dict keyed by artist name."""
+    """Group Spotify tracks by artist for review logic."""
     artist_map = defaultdict(list)
     for item in tracks:
         track = item.get('track')
@@ -129,11 +142,11 @@ def group_tracks_by_artist(tracks):
     return artist_map
 
 async def add_track_async(session, tid):
-    """Async wrapper to add a single track to TIDAL favorites."""
+    """Add a single track to TIDAL favorites asynchronously."""
     await asyncio.to_thread(session.user.favorites.add_track, tid)
 
 async def auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist_name):
-    """If an artist has 3+ saved tracks, find and favorite their album on TIDAL."""
+    """Auto-favorite albums when >=3 tracks saved per album."""
     album_counts = defaultdict(list)
     for t in tracks:
         album = t.get('album') or {}
@@ -141,13 +154,12 @@ async def auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, arti
         album_counts[key].append(t)
 
     def normalize_artist_name(name: str) -> str:
-        """Handle 'and' vs '&' discrepancies."""
         return normalize(name.lower().replace(' and ', ' & ').replace('&', ' and '))
 
     async def add_album(album_name, track_list):
         if len(track_list) < 3:
             return
-        print(f"📀 Adding album '{album_name}' to TIDAL favorites... ({len(track_list)} tracks)")
+        print(f"📀 Adding album '{album_name}' to favorites ({len(track_list)} tracks)")
         try:
             results = tidal_session.search(album_name) or {}
             albums = results.get('albums', [])
@@ -159,98 +171,114 @@ async def auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, arti
                 await asyncio.to_thread(tidal_session.user.favorites.add_album, matches[0].id)
             else:
                 print(f"⚠️ No match for '{album_name}' by {artist_name}")
-                with open('albums_not_found.txt', 'a', encoding='utf-8') as f:
-                    f.write(f"{artist_name} — {album_name}\n")
         except Exception as e:
-            print(f"❌ Error adding album '{album_name}': {e}")
-            with open('albums_not_found.txt', 'a', encoding='utf-8') as f:
-                f.write(f"{artist_name} — {album_name} [Error: {e}]\n")
+            print(f"❌ Error favoriting album '{album_name}': {e}")
 
     await asyncio.gather(*(add_album(name, lst) for name, lst in album_counts.items()))
 
 async def migrate_saved_tracks(spotify_session, tidal_session):
-    """Core migration: fetch saved Spotify, group by artist, review & sync."""
-    print('Fetching saved Spotify tracks...')
+    """Review and migrate saved Spotify tracks to TIDAL."""
+    print("Fetching saved Spotify tracks...")
     saved_tracks = get_saved_tracks(spotify_session)
     artist_groups = group_tracks_by_artist(saved_tracks)
 
     console = Console()
     with Progress(
-        SpinnerColumn(), TextColumn('[progress.description]{task.description}'),
-        TimeElapsedColumn(), BarColumn(), TaskProgressColumn(), transient=True, console=console
+        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(), transient=True, console=console
     ) as progress:
-        task = progress.add_task('📡 Fetching saved TIDAL tracks...', start=True)
+        task = progress.add_task("📡 Fetching TIDAL favorites...", start=True)
         existing = await asyncio.to_thread(get_all_tidal_favorite_tracks, tidal_session.user)
         progress.update(task, completed=len(existing))
 
     existing_titles = {f"{normalize(t.name)}|{normalize(t.artist.name)}" for t in existing}
-    print(f"✅ Loaded {len(existing_titles)} TIDAL favorites.")
+    print(f"✅ Loaded {len(existing_titles)} favorites.")
 
     for artist, tracks in artist_groups.items():
-        keys = [f"{normalize(t['name'])}|{normalize(artist)}" for t in tracks]
-        all_in = all(k in existing_titles for k in keys)
-        all_app = all(k in existing_titles or review_db.get_status(k)=='approved' for k in keys)
-        all_unapp = all(k in existing_titles or review_db.get_status(k)=='unapproved' for k in keys)
-        all_skip = all(review_db.get_status(k)=='skipped' and not review_db.should_retry(k) for k in keys)
-        if all_in or all_app or all_skip:
-            if all_in or all_app:
-                await auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist)
-            continue
         print(f"\n🎤 Artist: {artist} ({len(tracks)} tracks)")
-        for t in tracks[:5]: print(f"  • '{t['name']}' — {t['album']['name']}")
+        for t in tracks[:5]:
+            print(f"  • '{t['name']}' — {t['album']['name']}")
         resp = input(f"Approve and add 🎹 {artist.upper()}? [y/N]: ").strip().lower()
-        if resp=='y':
+        if resp == 'y':
             print(f"🔄 Syncing {artist}...")
             _sync.populate_track_match_cache(tracks, [])
             await _sync.search_new_tracks_on_tidal(tidal_session, tracks, artist, {})
             matched = _sync.get_tracks_for_new_tidal_playlist(tracks)
             await asyncio.gather(*(add_track_async(tidal_session, tid) for tid in matched))
             await auto_add_albums_with_multiple_tracks_async(tracks, tidal_session, artist)
-            existing_titles.update(keys)
-            for k in keys: review_db.set_approved(k)
         else:
-            for k in keys: review_db.set_unapproved(k)
+            print(f"⏭️ Skipping {artist}")
 
-# --- New: Convert TIDAL Playlists to Albums ---
+# --- Feature: Convert TIDAL Playlists to Albums ---
 async def convert_tidal_playlists_to_albums_async(tidal_session):
-    """
-    Scan each user playlist; if a playlist contains 3+ tracks from the same album,
-    favorite that album directly by album ID.
-    """
-    # Fetch all playlists
+    """Favorite albums in playlists having >=3 tracks in that playlist."""
     playlists = await get_all_playlists(tidal_session.user)
     for pl in playlists:
-        print(f"Loading tracks from TIDAL playlist '{pl.name}'")
-        # Fetch all tracks
         tracks = await get_all_playlist_tracks(pl)
-        print(f"🔍 Checking playlist '{pl.name}' for album conversions...")
-        # Group by album ID
-        album_groups = defaultdict(list)
-        for track in tracks:
-            if hasattr(track, 'album') and track.album:
-                album_groups[track.album.id].append(track)
-        # Favorite albums with 3+ tracks
-        for album_id, track_list in album_groups.items():
-            if len(track_list) >= 3:
-                album = track_list[0].album
-                print(f"📀 Favoriting album '{album.name}' ({len(track_list)} tracks)")
+        album_map = defaultdict(list)
+        for tr in tracks:
+            if tr.album:
+                album_map[tr.album.id].append(tr)
+        for album_id, group in album_map.items():
+            if len(group) >= 3:
+                print(f"📀 Favoriting album ID {album_id} ({len(group)} tracks)")
                 await asyncio.to_thread(tidal_session.user.favorites.add_album, album_id)
+
+# --- Feature: Add All Playlist Tracks to TIDAL Favorites ---
+from requests.exceptions import HTTPError  # For catching rate limit errors
+async def add_all_playlist_tracks_to_tidal_async(tidal_session):
+    """Favorite every track from every user playlist, with retry on rate limits and progress percentage."""
+    # Configurable delay between individual add operations (in seconds)
+    delay_between_calls = 0.5
+    playlists = await get_all_playlists(tidal_session.user)
+    total_playlists = len(playlists)
+    # Fetch current favorites once
+    favorites = {t.id for t in await asyncio.to_thread(get_all_tidal_favorite_tracks, tidal_session.user)}
+    for idx, pl in enumerate(playlists, start=1):
+        percent = (idx / total_playlists) * 100
+        print(f"[{idx}/{total_playlists}] Processing playlist '{pl.name}' ({percent:.1f}% complete)")
+        tracks = await get_all_playlist_tracks(pl)
+        print(f"📥 Adding tracks from playlist '{pl.name}' to favorites...")
+        total_tracks = len(tracks)
+        for tidx, tr in enumerate(tracks, start=1):
+            if tr.id not in favorites:
+                # Retry logic for HTTP 400 rate limit errors
+                backoff = 1
+                for attempt in range(5):
+                    try:
+                        await asyncio.to_thread(tidal_session.user.favorites.add_track, tr.id)
+                        favorites.add(tr.id)
+                        # Pause briefly to avoid hammering the API
+                        await asyncio.sleep(delay_between_calls)
+                        break
+                    except HTTPError as e:
+                        status = e.response.status_code if hasattr(e, 'response') else None
+                        # Show status code and message
+                        message = e.response.text if e.response is not None else str(e)
+                        print(f"HTTP error {status}: {message}. Retrying in {backoff}s... (attempt {attempt+1})")
+                        await asyncio.sleep(backoff)
+                        backoff *= 2
+                else:
+                    print(f"❌ Failed to add track ID {tr.id} after retries.")
+        # end of playlist
 
 # --- Main Entrypoint ---
 def main():
-    parser = argparse.ArgumentParser(description="Sync or migrate Spotify data to TIDAL with album conversions")
+    parser = argparse.ArgumentParser(description="spotify_to_tidal enhanced CLI")
     parser.add_argument('--config', default='config.yml')
     parser.add_argument('--sync-favorites', action=argparse.BooleanOptionalAction)
     parser.add_argument('--migrate-saved-tracks', action='store_true')
+    parser.add_argument('--convert-tidal-playlists-to-albums', action='store_true',
+                        help='Favorite albums with >=3 tracks in each playlist')
+    parser.add_argument('--add-all-playlist-tracks-to-tidal', action='store_true',
+                        help='Add every track from playlists to TIDAL favorites')
     parser.add_argument('--reset-db', action='store_true')
-    parser.add_argument('--convert-tidal-playlists-to-albums', action='store_true', 
-                        help='Scan TIDAL playlists and favorite albums with 3+ tracks')
     args = parser.parse_args()
 
     if args.reset_db:
         print("⚠️ Resetting the review database...")
         review_db.reset()
-        print("✅ Review database has been reset.")
+        print("✅ Review database reset.")
         return
 
     with open(args.config, 'r') as f:
@@ -258,10 +286,13 @@ def main():
 
     spotify_session = _auth.open_spotify_session(cfg['spotify'])
     tidal_session = _auth.open_tidal_session()
-    if not tidal_session.check_login(): sys.exit("Could not connect to TIDAL")
+    if not tidal_session.check_login():
+        sys.exit("Could not connect to TIDAL")
 
     if args.convert_tidal_playlists_to_albums:
         asyncio.run(convert_tidal_playlists_to_albums_async(tidal_session))
+    elif args.add_all_playlist_tracks_to_tidal:
+        asyncio.run(add_all_playlist_tracks_to_tidal_async(tidal_session))
     elif args.migrate_saved_tracks:
         asyncio.run(migrate_saved_tracks(spotify_session, tidal_session))
     else:
