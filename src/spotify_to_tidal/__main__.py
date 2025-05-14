@@ -262,7 +262,56 @@ async def add_all_playlist_tracks_to_tidal_async(tidal_session):
                     print(f"❌ Failed to add track ID {tr.id} after retries.")
         # end of playlist
 
-# --- Main Entrypoint ---
+# --- Feature: Retry Albums Not Found ---
+from difflib import SequenceMatcher  # For fuzzy matching
+async def retry_albums_not_found_async(tidal_session):
+    """Fuzzy-search albums from the not-found log and favorite matches with manual approval."""
+    input_path = Path('albums_not_found.txt')
+    output_path = Path('albums_not_found_remaining.txt')
+    failed = []
+    if not input_path.exists():
+        print("🛑 albums_not_found.txt not found.")
+        return
+    lines = [line.strip() for line in input_path.read_text(encoding='utf-8').splitlines() if '—' in line]
+    total = len(lines)
+    for idx, line in enumerate(lines, start=1):
+        album, artist = [part.strip() for part in line.split('—', 1)]
+        print(f"[{idx}/{total}] Searching for album '{album}' by {artist}...")
+        results = tidal_session.search(album + ' ' + artist) or {}
+        candidates = results.get('albums', [])
+        best, best_score = None, 0.0
+        for cand in candidates:
+            name_score = SequenceMatcher(None, album.lower(), cand.name.lower()).ratio()
+            artist_score = SequenceMatcher(None, artist.lower(), ' '.join([a.name.lower() for a in cand.artists])).ratio()
+            score = (name_score + artist_score) / 2
+            if score > best_score:
+                best_score, best = score, cand
+        if best and best_score >= 0.7:
+            candidate_artists = ', '.join([a.name for a in best.artists])
+            print(f"✅ Best match: '{best.name}' by {candidate_artists} (score {best_score:.2f})")
+            resp = input(f"Add this album to favorites? [y/N]: ").strip().lower()
+            if resp == 'y':
+                try:
+                    await asyncio.to_thread(tidal_session.user.favorites.add_album, best.id)
+                    print(f"💾 Added '{best.name}' to favorites.")
+                except Exception as e:
+                    print(f"❌ Failed to add album: {e}")
+                    failed.append(line)
+            else:
+                print(f"⏭️ Skipped '{best.name}'.")
+                failed.append(line)
+        else:
+            print(f"⚠️ No good fuzzy match for '{album}' by {artist} (best score {best_score:.2f})")
+            failed.append(line)
+    # Write remaining failures
+    if failed:
+        # Write remaining failures with newline join
+        output_path.write_text(''.join(failed), encoding='utf-8')
+        print(f"📝 Wrote {len(failed)}/{total} unfound albums to {output_path}")
+    else:
+        print("🎉 All albums processed successfully!")
+
+# --- Main Entrypoint --- ---
 def main():
     parser = argparse.ArgumentParser(description="spotify_to_tidal enhanced CLI")
     parser.add_argument('--config', default='config.yml')
@@ -272,6 +321,8 @@ def main():
                         help='Favorite albums with >=3 tracks in each playlist')
     parser.add_argument('--add-all-playlist-tracks-to-tidal', action='store_true',
                         help='Add every track from playlists to TIDAL favorites')
+    parser.add_argument('--retry-albums-not-found', action='store_true',
+                        help='Fuzzy-search and favorite albums listed in albums_not_found.txt')
     parser.add_argument('--reset-db', action='store_true')
     args = parser.parse_args()
 
@@ -281,21 +332,27 @@ def main():
         print("✅ Review database reset.")
         return
 
+    # Load configuration
     with open(args.config, 'r') as f:
         cfg = yaml.safe_load(f)
 
+    # Establish sessions
     spotify_session = _auth.open_spotify_session(cfg['spotify'])
     tidal_session = _auth.open_tidal_session()
     if not tidal_session.check_login():
         sys.exit("Could not connect to TIDAL")
 
+    # Dispatch based on flags
     if args.convert_tidal_playlists_to_albums:
         asyncio.run(convert_tidal_playlists_to_albums_async(tidal_session))
     elif args.add_all_playlist_tracks_to_tidal:
         asyncio.run(add_all_playlist_tracks_to_tidal_async(tidal_session))
+    elif args.retry_albums_not_found:
+        asyncio.run(retry_albums_not_found_async(tidal_session))
     elif args.migrate_saved_tracks:
         asyncio.run(migrate_saved_tracks(spotify_session, tidal_session))
     else:
+        # Default behavior: sync playlists and favorites
         _sync.sync_playlists_wrapper(
             spotify_session, tidal_session,
             _sync.get_user_playlist_mappings(spotify_session, tidal_session, cfg), cfg
