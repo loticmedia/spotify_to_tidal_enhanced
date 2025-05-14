@@ -311,6 +311,28 @@ async def retry_albums_not_found_async(tidal_session):
     else:
         print("🎉 All albums processed successfully!")
 
+# --- Feature: Review and Delete Playlists ---
+async def review_and_delete_playlists_async(tidal_session):
+    """List all user playlists and allow optional deletion."""
+    # Fetch and sort playlists alphabetically
+    playlists = sorted(
+        await get_all_playlists(tidal_session.user),
+        key=lambda pl: pl.name.lower()
+    )
+    total = len(playlists)
+    for idx, pl in enumerate(playlists, start=1):
+        print(f"[{idx}/{total}] Playlist: '{pl.name}' (ID: {pl.id})")
+        resp = input("Delete this playlist? [y/N]: ").strip().lower()
+        if resp == 'y':
+            try:
+                # Deletion via tidalapi Playlist.delete() method
+                await asyncio.to_thread(pl.delete)
+                print(f"🗑️ Deleted playlist '{pl.name}'.")
+            except Exception as e:
+                print(f"❌ Failed to delete playlist: {e}")
+        else:
+            print(f"⏭️ Kept playlist '{pl.name}'.")
+
 # --- Main Entrypoint --- ---
 def main():
     parser = argparse.ArgumentParser(description="spotify_to_tidal enhanced CLI")
@@ -323,6 +345,8 @@ def main():
                         help='Add every track from playlists to TIDAL favorites')
     parser.add_argument('--retry-albums-not-found', action='store_true',
                         help='Fuzzy-search and favorite albums listed in albums_not_found.txt')
+    parser.add_argument('--review-playlists', action='store_true',
+                        help='Review and optionally delete existing TIDAL playlists')
     parser.add_argument('--reset-db', action='store_true')
     args = parser.parse_args()
 
@@ -347,7 +371,8 @@ def main():
         asyncio.run(convert_tidal_playlists_to_albums_async(tidal_session))
     elif args.add_all_playlist_tracks_to_tidal:
         asyncio.run(add_all_playlist_tracks_to_tidal_async(tidal_session))
-    elif args.retry_albums_not_found:
+    elif args.review_playlists:
+        asyncio.run(review_and_delete_playlists_async(tidal_session))
         asyncio.run(retry_albums_not_found_async(tidal_session))
     elif args.migrate_saved_tracks:
         asyncio.run(migrate_saved_tracks(spotify_session, tidal_session))
