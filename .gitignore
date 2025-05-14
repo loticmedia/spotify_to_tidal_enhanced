@@ -36,3 +36,5 @@ dmypy.json
 .spotify_saved_tracks_cache.json
 .track_review_log.json
 .gitignore
+src/.DS_Store
+.DS_Store
