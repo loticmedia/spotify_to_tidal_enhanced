@@ -3,8 +3,8 @@ requires = ["setuptools >= 61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "spotify_to_tidal"
-version = "1.0.4"
+name = "spotify_to_tidal_enhanced"
+version = "1.0.0"
 requires-python = ">= 3.10"
 
 dependencies = [
