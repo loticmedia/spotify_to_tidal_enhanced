@@ -1,4 +1,4 @@
-# spotify\_to\_tidal Enhanced CLI
+# spotify\_to\_tidal\_enhanced CLI
 
 A command-line application to synchronize your Spotify content with Tidal. Supports:
 
@@ -13,15 +13,24 @@ A command-line application to synchronize your Spotify content with Tidal. Suppo
 
 ## Installation
 
-Clone the repository and install in editable mode:
+Clone the repository, create and activate a local virtual environment, then install:
 
 ```bash
-git clone https://github.com/your-org/spotify_to_tidal.git
-cd spotify_to_tidal
+# 1. Clone the repository
+git clone https://github.com/loticmedia/spotify_to_tidal_enhanced.git
+cd spotify_to_tidal_enhanced
+
+# 2. Create a Python virtual environment in `.venv`
+python3 -m venv .venv
+
+# 3. Activate the virtual environment
+source .venv/bin/activate  # macOS/Linux
+
+# 4. Install in editable mode
 python3 -m pip install -e .
 ```
 
-This registers the `spotify_to_tidal` command in your environment.
+This ensures dependencies are isolated and registers the `spotify_to_tidal_enhanced` command in your environment.
 
 ## Configuration
 
@@ -46,7 +55,7 @@ This registers the `spotify_to_tidal` command in your environment.
 Run the primary command from your shell:
 
 ```bash
-spotify_to_tidal [OPTIONS]
+spotify_to_tidal_enhanced [OPTIONS]
 ```
 
 ### Common Options
@@ -65,33 +74,30 @@ spotify_to_tidal [OPTIONS]
 1. **Sync all playlists & liked songs (default):**
 
    ```bash
-   spotify_to_tidal
+   spotify_to_tidal_enhanced
    ```
 
 2. **Sync only playlists, skip liked songs:**
 
    ```bash
-   spotify_to_tidal --no-sync-favorites
+   spotify_to_tidal_enhanced --no-sync-favorites
    ```
 
 3. **Interactively review & migrate saved tracks:**
 
    ```bash
-   spotify_to_tidal --migrate-saved-tracks
+   spotify_to_tidal_enhanced --migrate-saved-tracks
    ```
 
 4. **Automatically favorite albums from your Tidal playlists:**
 
    ```bash
-   spotify_to_tidal --convert-tidal-playlists-to-albums
+   spotify_to_tidal_enhanced --convert-tidal-playlists-to-albums
    ```
 
 5. **Reset the internal review database:**
 
    ```bash
-   spotify_to_tidal --reset-db
+   spotify_to_tidal_enhanced --reset-db
    ```
 
----
-
-##
